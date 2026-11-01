@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "oo-epc-mcp"
+version = "1.0.0"
+description = "FastMCP server for sports betting odds de-vigging (Tokyo Univ Goto 2026 OO-EPC) and score probability modeling."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "i0ivi0i", email = "tiktokincn@gmail.com" }
+]
+keywords = ["mcp", "fastmcp", "sports-analytics", "odds", "devig", "betting-math", "poisson"]
+dependencies = [
+    "mcp>=1.2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/i0ivi0i/OO-EPC-MCP"
+Repository = "https://github.com/i0ivi0i/OO-EPC-MCP.git"
+
+[project.scripts]
+oo-epc-mcp = "server:mcp.run"
