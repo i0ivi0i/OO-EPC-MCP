@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "oo-epc-mcp"
-version = "1.0.0"
-description = "FastMCP server for sports betting odds de-vigging (Tokyo Univ Goto 2026 OO-EPC) and score probability modeling."
+version = "1.1.0"
+description = "FastMCP server for sports betting odds de-vigging (Tokyo Univ Goto 2026 OO-EPC single & batch) and score probability modeling."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

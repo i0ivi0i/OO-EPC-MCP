@@ -1,14 +1,14 @@
 """
-sports-math / OO-EPC MCP Server
-Official Model Context Protocol server for sports betting analytics & odds mathematics.
-
+sports-math MCP Server
+Official Model Context Protocol server for sports analytics & betting mathematics.
 Exposes:
-- devig_oo_epc: Tokyo University Goto (2026) OO-EPC de-vigging convex optimization algorithm
+- devig_oo_epc: Tokyo University Goto (2026) OO-EPC de-vigging convex optimization
+- devig_oo_epc_batch: Single-call batch OO-EPC de-vigging across up to 21 bookmakers with Pinnacle scissor-gap comparison
 - poisson_dixon_coles: Bivariate Poisson score matrix with low-score adjustment
 """
 
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     # Official MCP SDK v2+ (where FastMCP is renamed to MCPServer)
@@ -24,12 +24,43 @@ except ImportError:
 mcp = FastMCP(
     name="sports-math",
     description="Mathematical computation engine for sports betting odds devigging and score probability modeling.",
-    version="1.0.0"
+    version="1.1.0"
 )
 
 
 class OoEpcCalculator:
     """Tokyo University Shota Goto (2026) OO-EPC De-vigging Algorithm"""
+
+    @staticmethod
+    def validate_triple(odds: List[Any], context: str = "odds") -> Tuple[Optional[List[float]], Optional[dict]]:
+        if not isinstance(odds, (list, tuple)) or len(odds) != 3:
+            return None, {
+                "error_code": "INVALID_TRIPLE_LENGTH",
+                "field": context,
+                "received": odds,
+                "message": f"{context} must be a 3-element list [home_odds, draw_odds, away_odds], got {odds!r}. Retry with exactly 3 decimal odds > 1.0."
+            }
+        parsed: List[float] = []
+        labels = ("home_odds", "draw_odds", "away_odds")
+        for idx, val in enumerate(odds):
+            try:
+                fval = float(val)
+            except (TypeError, ValueError):
+                return None, {
+                    "error_code": "NON_NUMERIC_ODD",
+                    "field": f"{context}.{labels[idx]}",
+                    "received": val,
+                    "message": f"{context}.{labels[idx]} must be a numeric decimal odd > 1.0, got {val!r}."
+                }
+            if not math.isfinite(fval) or fval <= 1.0:
+                return None, {
+                    "error_code": "ODD_OUT_OF_RANGE",
+                    "field": f"{context}.{labels[idx]}",
+                    "received": fval,
+                    "message": f"{context}.{labels[idx]} must be strictly > 1.0 (received {fval}). Check column order (do not pass return-rate or handicap line as 1X2 odds)."
+                }
+            parsed.append(fval)
+        return parsed, None
 
     @staticmethod
     def calculate(odds: List[float], total: float = 1.0) -> List[float]:
@@ -50,6 +81,34 @@ class OoEpcCalculator:
             output_probs = [p / normalizer for p in inverses]
 
         return output_probs
+
+    @classmethod
+    def solve_triple(cls, odds: List[float]) -> dict:
+        probs = cls.calculate(odds)
+        h_pct = probs[0] * 100.0
+        d_pct = probs[1] * 100.0
+        a_pct = probs[2] * 100.0
+        booksum = sum(1.0 / o for o in odds)
+        margin = booksum - 1.0
+        return {
+            "algorithm": "Goto-OO-EPC",
+            "odds": odds,
+            "probabilities": [round(p, 6) for p in probs],
+            "percentages": [f"{h_pct:.2f}%", f"{d_pct:.2f}%", f"{a_pct:.2f}%"],
+            "display_text": f"{h_pct:.1f}% / {d_pct:.1f}% / {a_pct:.1f}%",
+            "margin": round(margin, 4),
+            "margin_pct": round(margin * 100.0, 2),
+            "prob_1x2": {
+                "home": round(probs[0], 6),
+                "draw": round(probs[1], 6),
+                "away": round(probs[2], 6)
+            },
+            "percentages_1x2": {
+                "home": f"{h_pct:.2f}%",
+                "draw": f"{d_pct:.2f}%",
+                "away": f"{a_pct:.2f}%"
+            }
+        }
 
 
 class PoissonEngine:
@@ -124,31 +183,133 @@ def devig_oo_epc(home_odds: float, draw_odds: float, away_odds: float) -> dict:
         draw_odds: Bookmaker decimal odds for Draw (e.g. 4.30)
         away_odds: Bookmaker decimal odds for Away Win (e.g. 4.60)
     """
-    odds = [float(home_odds), float(draw_odds), float(away_odds)]
-    probs = OoEpcCalculator.calculate(odds)
-    h_pct = probs[0] * 100
-    d_pct = probs[1] * 100
-    a_pct = probs[2] * 100
-    booksum = sum(1.0 / o for o in odds)
-    margin = booksum - 1.0
+    parsed, err = OoEpcCalculator.validate_triple([home_odds, draw_odds, away_odds], context="devig_oo_epc")
+    if err is not None:
+        return {"status": "error", "algorithm": "Goto-OO-EPC", "error": err}
+    return OoEpcCalculator.solve_triple(parsed)
+
+
+@mcp.tool()
+def devig_oo_epc_batch(items: List[Dict[str, Any]]) -> dict:
+    """Calculate Goto (2026) OO-EPC de-vigged probabilities, bookmaker margins, opening-to-latest shifts, and Pinnacle (cid=177) scissor gaps for up to 21 bookmakers in one call.
+
+    Args:
+        items: List of bookmaker dicts. Each dict accepts:
+            - cid: Bookmaker integer/string ID (e.g. 177 for Pinnacle, 1129 for Sporttery, 545 for Crown, 281 for Bet365)
+            - name / bookmaker: Optional bookmaker display name (e.g. "平博", "中国体彩")
+            - open / open_odds: Optional 3-element list [home_odds, draw_odds, away_odds] for opening 1X2 odds
+            - latest / latest_odds / odds: Optional 3-element list [home_odds, draw_odds, away_odds] for latest 1X2 odds
+    """
+    if not isinstance(items, list) or len(items) == 0:
+        return {
+            "status": "error",
+            "algorithm": "Goto-OO-EPC",
+            "error": {
+                "error_code": "EMPTY_ITEMS",
+                "message": "items must be a non-empty list of bookmaker dicts, e.g. [{'cid': 177, 'name': '平博', 'open': [1.41, 4.91, 7.60], 'latest': [1.43, 4.86, 6.72]}]."
+            }
+        }
+
+    results: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    pinnacle_anchor: Optional[Dict[str, Any]] = None
+
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            errors.append({
+                "index": idx,
+                "error_code": "INVALID_ITEM_TYPE",
+                "message": f"items[{idx}] must be a dict, got {type(item).__name__}."
+            })
+            continue
+
+        cid = item.get("cid", item.get("机构编号", idx))
+        name = item.get("name", item.get("bookmaker", item.get("机构", str(cid))))
+        label = f"cid={cid}({name})"
+
+        raw_open = item.get("open", item.get("open_odds"))
+        raw_latest = item.get("latest", item.get("latest_odds", item.get("odds")))
+
+        if raw_open is None and raw_latest is None:
+            errors.append({
+                "cid": cid,
+                "name": name,
+                "error_code": "MISSING_ODDS",
+                "message": f"{label} must provide 'open' ([h,d,a]) and/or 'latest' ([h,d,a])."
+            })
+            continue
+
+        row_out: Dict[str, Any] = {"cid": cid, "name": name}
+        open_res: Optional[dict] = None
+        latest_res: Optional[dict] = None
+
+        if raw_open is not None:
+            parsed_open, err_open = OoEpcCalculator.validate_triple(raw_open, context=f"{label}.open")
+            if err_open is not None:
+                errors.append({"cid": cid, "name": name, **err_open})
+                continue
+            open_res = OoEpcCalculator.solve_triple(parsed_open)
+            row_out["open"] = {
+                "odds": open_res["odds"],
+                "prob_1x2": open_res["prob_1x2"],
+                "percentages_1x2": open_res["percentages_1x2"],
+                "display_text": open_res["display_text"],
+                "margin_pct": open_res["margin_pct"]
+            }
+
+        if raw_latest is not None:
+            parsed_latest, err_latest = OoEpcCalculator.validate_triple(raw_latest, context=f"{label}.latest")
+            if err_latest is not None:
+                errors.append({"cid": cid, "name": name, **err_latest})
+                continue
+            latest_res = OoEpcCalculator.solve_triple(parsed_latest)
+            row_out["latest"] = {
+                "odds": latest_res["odds"],
+                "prob_1x2": latest_res["prob_1x2"],
+                "percentages_1x2": latest_res["percentages_1x2"],
+                "display_text": latest_res["display_text"],
+                "margin_pct": latest_res["margin_pct"]
+            }
+
+        if open_res is not None and latest_res is not None:
+            dh = round((latest_res["prob_1x2"]["home"] - open_res["prob_1x2"]["home"]) * 100.0, 2)
+            dd = round((latest_res["prob_1x2"]["draw"] - open_res["prob_1x2"]["draw"]) * 100.0, 2)
+            da = round((latest_res["prob_1x2"]["away"] - open_res["prob_1x2"]["away"]) * 100.0, 2)
+            dm = round(latest_res["margin_pct"] - open_res["margin_pct"], 2)
+            row_out["delta_prob_pct"] = {"home": dh, "draw": dd, "away": da}
+            row_out["delta_margin_pct"] = dm
+
+        is_pinnacle = (str(cid) == "177") or ("平博" in str(name)) or ("pinnacle" in str(name).lower())
+        if is_pinnacle and latest_res is not None:
+            pinnacle_anchor = {
+                "cid": cid,
+                "name": name,
+                "latest_prob_1x2": latest_res["prob_1x2"],
+                "latest_display_text": latest_res["display_text"],
+                "latest_margin_pct": latest_res["margin_pct"],
+                "delta_prob_pct": row_out.get("delta_prob_pct")
+            }
+
+        results.append(row_out)
+
+    if pinnacle_anchor is not None:
+        pin_p = pinnacle_anchor["latest_prob_1x2"]
+        for r in results:
+            if "latest" in r:
+                lp = r["latest"]["prob_1x2"]
+                r["gap_vs_pin_latest_pct"] = {
+                    "home": round((lp["home"] - pin_p["home"]) * 100.0, 2),
+                    "draw": round((lp["draw"] - pin_p["draw"]) * 100.0, 2),
+                    "away": round((lp["away"] - pin_p["away"]) * 100.0, 2)
+                }
 
     return {
-        "algorithm": "Goto-OO-EPC",
-        "odds": odds,
-        "probabilities": [round(p, 6) for p in probs],
-        "percentages": [f"{h_pct:.2f}%", f"{d_pct:.2f}%", f"{a_pct:.2f}%"],
-        "display_text": f"{h_pct:.1f}% / {d_pct:.1f}% / {a_pct:.1f}%",
-        "margin": round(margin, 4),
-        "prob_1x2": {
-            "home": round(probs[0], 6),
-            "draw": round(probs[1], 6),
-            "away": round(probs[2], 6)
-        },
-        "percentages_1x2": {
-            "home": f"{h_pct:.2f}%",
-            "draw": f"{d_pct:.2f}%",
-            "away": f"{a_pct:.2f}%"
-        }
+        "status": "success" if len(errors) == 0 else ("partial" if len(results) > 0 else "error"),
+        "algorithm": "Goto-OO-EPC-Batch",
+        "count": len(results),
+        "pinnacle_anchor": pinnacle_anchor,
+        "results": results,
+        "errors": errors
     }
 
 

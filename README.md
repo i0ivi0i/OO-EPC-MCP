@@ -22,10 +22,21 @@ Calculates true unbiased 1X2 probabilities from 3-way bookmaker odds using the *
   - `away_odds` (`float`): Decimal odds for Away Win (e.g. `4.60`)
 - **Returns**:
   - Unbiased true probability vector (`probabilities`, `percentages`)
-  - Bookmaker overround / margin (`margin`)
+  - Bookmaker overround / margin (`margin`, `margin_pct`)
   - Formatted display text (`63.4% / 19.1% / 17.5%`)
+  - Structured parameter validation error payload if any odd is `<= 1.0`
 
-### 2. `poisson_dixon_coles`
+### 2. `devig_oo_epc_batch` (New in v1.1.0)
+Single-call batch OO-EPC de-vigging across up to 21 bookmakers' opening and latest 1X2 odds, with automatic opening-to-latest probability shift (`delta_prob_pct`) and Pinnacle (`cid=177`) benchmark scissor-gap (`gap_vs_pin_latest_pct`) calculation.
+
+- **Parameters**:
+  - `items` (`List[Dict[str, Any]]`): List of bookmaker items, each accepting `cid`, `name`, `open` (`[home_odds, draw_odds, away_odds]`), and `latest` (`[home_odds, draw_odds, away_odds]`).
+- **Returns**:
+  - `pinnacle_anchor`: De-vigged latest benchmark probabilities when Pinnacle (`cid=177` / `"平博"`) is present in the batch
+  - `results`: Per-bookmaker opening/latest OO-EPC probabilities, margins, `delta_prob_pct`, `delta_margin_pct`, and `gap_vs_pin_latest_pct`
+  - `errors`: Self-correcting field-level validation diagnostics for any malformed entry
+
+### 3. `poisson_dixon_coles`
 Calculates bivariate Poisson match score probabilities with **Dixon-Coles** low-score factor adjustments (handling the systematic underestimation of low-scoring draws like 0-0, 1-1).
 
 - **Parameters**:
