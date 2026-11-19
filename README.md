@@ -24,7 +24,7 @@ Calculates true unbiased 1X2 probabilities from 3-way bookmaker odds using the *
   - Unbiased true probability vector (`probabilities`, `percentages`)
   - Bookmaker overround / margin (`margin`, `margin_pct`)
   - Formatted display text (`63.4% / 19.1% / 17.5%`)
-  - Structured parameter validation error payload if any odd is `<= 1.0`
+  - Structured parameter validation error payload if any odd is `< 1.0` (`1.00` floor odds safely trigger Goto Algorithm 1 fallback)
 
 ### 2. `devig_oo_epc_batch` (New in v1.1.0)
 Single-call batch OO-EPC de-vigging across up to 21 bookmakers' opening and latest 1X2 odds, with automatic opening-to-latest probability shift (`delta_prob_pct`) and Pinnacle (`cid=177`) benchmark scissor-gap (`gap_vs_pin_latest_pct`) calculation.

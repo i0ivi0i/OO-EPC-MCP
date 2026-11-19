@@ -24,7 +24,7 @@ except ImportError:
 mcp = FastMCP(
     name="sports-math",
     description="Mathematical computation engine for sports betting odds devigging and score probability modeling.",
-    version="1.1.0"
+    version="1.1.1"
 )
 
 
@@ -38,7 +38,7 @@ class OoEpcCalculator:
                 "error_code": "INVALID_TRIPLE_LENGTH",
                 "field": context,
                 "received": odds,
-                "message": f"{context} must be a 3-element list [home_odds, draw_odds, away_odds], got {odds!r}. Retry with exactly 3 decimal odds > 1.0."
+                "message": f"{context} must be a 3-element list [home_odds, draw_odds, away_odds], got {odds!r}. Retry with exactly 3 decimal odds >= 1.0."
             }
         parsed: List[float] = []
         labels = ("home_odds", "draw_odds", "away_odds")
@@ -50,14 +50,14 @@ class OoEpcCalculator:
                     "error_code": "NON_NUMERIC_ODD",
                     "field": f"{context}.{labels[idx]}",
                     "received": val,
-                    "message": f"{context}.{labels[idx]} must be a numeric decimal odd > 1.0, got {val!r}."
+                    "message": f"{context}.{labels[idx]} must be a numeric decimal odd >= 1.0, got {val!r}."
                 }
-            if not math.isfinite(fval) or fval <= 1.0:
+            if not math.isfinite(fval) or fval < 1.0:
                 return None, {
                     "error_code": "ODD_OUT_OF_RANGE",
                     "field": f"{context}.{labels[idx]}",
                     "received": fval,
-                    "message": f"{context}.{labels[idx]} must be strictly > 1.0 (received {fval}). Check column order (do not pass return-rate or handicap line as 1X2 odds)."
+                    "message": f"{context}.{labels[idx]} must be >= 1.0 (received {fval}). Check column order (do not pass return-rate or handicap line as 1X2 odds)."
                 }
             parsed.append(fval)
         return parsed, None
@@ -76,7 +76,9 @@ class OoEpcCalculator:
         else:
             output_probs = [0.0] * len(inverses)
 
-        if any(p <= 0.0 for p in output_probs) or (booksum <= total):
+        # Goto (2026) Alg. 5 Step 6: fall back to Alg. 1 multiplicative scaling when any
+        # output hits <= 0 (incl. IEEE-754 near-zero from 1.00 floor odds) or booksum <= total.
+        if any(p <= 1e-12 for p in output_probs) or (booksum <= total):
             normalizer = booksum / total
             output_probs = [p / normalizer for p in inverses]
 
