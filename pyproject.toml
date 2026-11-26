@@ -4,15 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "oo-epc-mcp"
-version = "1.3.0"
-description = "FastMCP server for sports betting odds de-vigging (Tokyo Univ Goto 2026 OO-EPC single & batch), conformal calibration (LAC/Mondrian/ACI/Venn-Abers), Bayesian & e-process lifecycle tracking, and score probability modeling."
+version = "1.4.0"
+description = "FastMCP server for sports betting odds de-vigging (Tokyo Univ Goto 2026 OO-EPC single & batch), conformal calibration (LAC/Mondrian/ACI/Venn-Abers), Bayesian/e-process lifecycle tracking, 12-bucket contextual hierarchical bandit routing (Bayes-UCB & seeded Thompson Sampling), and score probability modeling."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
     { name = "i0ivi0i", email = "tiktokincn@gmail.com" }
 ]
-keywords = ["mcp", "fastmcp", "sports-analytics", "odds", "devig", "betting-math", "poisson", "conformal-prediction", "venn-abers", "bayesian-updating", "e-process"]
+keywords = ["mcp", "fastmcp", "sports-analytics", "odds", "devig", "betting-math", "poisson", "conformal-prediction", "venn-abers", "bayesian-updating", "e-process", "contextual-bandit", "bayes-ucb", "thompson-sampling"]
 dependencies = [
     "mcp>=1.2.0",
 ]
@@ -25,4 +25,8 @@ Homepage = "https://github.com/i0ivi0i/OO-EPC-MCP"
 Repository = "https://github.com/i0ivi0i/OO-EPC-MCP.git"
 
 [project.scripts]
-oo-epc-mcp = "server:mcp.run"
+oo-epc-mcp = "server:_cli_main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["engines"]
+only-include = ["engines", "server.py"]

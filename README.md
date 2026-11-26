@@ -117,11 +117,25 @@ Computes deterministic 1X2 conformal prediction sets (**LAC**), **Mondrian** dra
 ### 5. `conformal_record_outcomes` (New in v1.2.0)
 Idempotently appends settled pre-match 1X2 outcomes (`match_id` deduplicated, chronologically sorted, atomic file replacement) and updates ACI `alpha_t` (clipped to `[0.10, 0.40]`). Enforces `cutoff_time < kickoff_at` and rejects replay/invalid numeric payloads.
 
-### 6. `bayesian_record_outcomes` (New in v1.3.0)
-Idempotently appends settled pre-match directional/portfolio observations at `(match_id, entity_id)` grain into `data/bayesian_tracker.jsonl`. Enforces `cutoff_time < kickoff_at`, rejects replay payloads, clamps valid `(0, 1)` baselines into `[0.02, 0.98]`, and preserves settled misses regardless of post-hoc `Noise` labels.
+### 6. `bayesian_record_outcomes` (Updated in v1.4.0)
+Idempotently appends settled pre-match directional/portfolio/shadow observations at `(match_id, entity_id)` grain into `data/bayesian_tracker.jsonl` (tolerating leading UTF-8 BOM on read and emitting BOM-free UTF-8 on write). Enforces `cutoff_time < kickoff_at`, rejects replay payloads and non-empty unsupported directions (`UNSUPPORTED_DIRECTION`; supports 1X2 single `主胜`/`平`/`客胜` and double-chance `主不败`/`客不败`), clamps valid `(0, 1)` baselines into `[0.02, 0.98]`, persists 12-bucket contextual metadata (`league_tier`, `ah_tier`, `context_bucket`, `observation_role`: `primary | residual | shadow`), and preserves settled misses regardless of post-hoc `Noise` labels.
 
-### 7. `bayesian_health_report` (New in v1.3.0)
-Evaluates market-anchored Beta posteriors (`M_0 = 4.0`, exact 90% credible intervals), anytime-valid mixture betting e-processes (`e_pos`, `e_neg`, `anytime_p_pos`), discounted posteriors (`decay_gamma = 0.95`), and resetting Page-CUSUM drift detectors (`cusum_drift_e`) across `draft` hypotheses (`COLLECTING`, `STALE_REVIEW`, `PROMOTE_RECOMMENDED`, `STRONG_EVIDENCE`, `DEPRECATE_RECOMMENDED`) and `stable` / `portfolio` entities (`HEALTHY`, `DRIFT_WATCH`, `DRIFT_ALERT`).
+### 7. `bayesian_health_report` (Updated in v1.4.0)
+Evaluates market-anchored Beta posteriors (`M_0 = 4.0`, exact 90% credible intervals), anytime-valid mixture betting e-processes (`e_pos`, `e_neg`, `anytime_p_pos`), discounted posteriors (`decay_gamma = 0.95`), resetting Page-CUSUM drift detectors (`cusum_drift_e`), per-role breakdown (`role_counts`: `primary / residual / shadow`), compact active-bucket summary (`context_counts`, `<= 12` entries), and opt-in single-shrinkage logit-space 12-bucket contextual summaries (`include_contexts=False` by default for compact checkups; auto-enabled when `context_bucket` is specified or `include_contexts=True`) across `draft` hypotheses and `stable` / `portfolio` entities.
+
+### 8. `bayesian_select_playbooks` (New in v1.4.0)
+Causal contextual hierarchical bandit router for resolving multi-tree playbook conflicts strictly prior to kickoff (`row.cutoff_time < row.kickoff_at` AND `row.kickoff_at <= cutoff_time - 3h`, excluding `known_answer_replay`). Separates `primary_seat` (exploitation excess minus `DRIFT_WATCH`/`DRIFT_ALERT` penalties) from `residual_seat` (excluding `DRIFT_ALERT` challengers unless only drifted challengers remain; supporting deterministic `bayes_ucb` quantile scoring and SHA-256 `seed_key`-seeded `contextual_ts` Beta sampling), breaks equal-score ties by caller `candidate_ids` order (`tie_break_policy: "caller_order"`, `tie_break_applied`), and emits `shadow_candidates`, `seed_digest`, and `sampled_scores`.
+
+---
+
+## 📦 Package Architecture (v1.4.0)
+
+- `server.py` — Thin FastMCP entry point & backward-compatible re-export facade (`oo-epc-mcp = "server:_cli_main"`).
+- `engines/common.py` — Shared pure-stdlib numeric validators, timestamp parsing, Beta/logit math, and atomic JSONL I/O.
+- `engines/devig.py` — `OoEpcCalculator` (single & batch OO-EPC) and `PoissonEngine` (Dixon-Coles).
+- `engines/conformal.py` — `ConformalEngine` (LAC, Mondrian, ACI, Laplace Venn-Abers).
+- `engines/context.py` — 12-bucket contextual normalization (`normalize_league_tier`, `normalize_ah_tier`, `normalize_context_bucket`) and single-shrinkage logit evaluator (`evaluate_context`).
+- `engines/bayesian.py` — `BayesianTrackerEngine`, `select_playbooks`, and `--bootstrap-bayesian-ledger` / `--verify-bayesian-ledger` CLI.
 
 ---
 
@@ -134,6 +148,9 @@ Evaluates market-anchored Beta posteriors (`M_0 = 4.0`, exact 90% credible inter
 - **Choe, Y. J., & Ramdas, A. (2023)**. *Comparing Sequential Forecasters*. Operations Research (`arXiv:2110.00115v6`).
 - **Grünwald, P., de Heide, R., & Koolen, W. M. (2024)**. *Safe Testing*. JRSS-B (`arXiv:1906.07801`).
 - **Macrì-Demartino, R., Egidi, L., & Torelli, N. (2025)**. *Bayesian weighted discrete-time dynamic models for association football prediction* (`arXiv:2508.05891`).
+- **Russo, D. J., Van Roy, B., Kazerouni, A., Osband, I., & Wen, Z. (2018)**. *A Tutorial on Thompson Sampling*. Foundations and Trends in Machine Learning.
+- **Kaufmann, E., Cappé, O., & Garivier, A. (2012)**. *On Bayesian Upper Confidence Bounds for Bandit Problems*. AISTATS.
+- **Hong, J., Kveton, B., Zaheer, M., & Ghavamzadeh, M. (2022)**. *Hierarchical Bayesian Bandits*. AISTATS.
 - **Dixon, M. J., & Coles, S. G. (1997)**. *Modelling Association Football Scores and Inefficiencies in the Football Betting Market*. Applied Statistics (Journal of the Royal Statistical Society: Series C), 46(2), 265–280.
 
 ---
