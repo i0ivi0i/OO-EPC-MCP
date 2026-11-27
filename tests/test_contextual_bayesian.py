@@ -100,6 +100,7 @@ class TestContextualBayesianExploration(unittest.TestCase):
         self.assertEqual(norm(league="日联杯", league_tier="次级联赛", ah_tier_and_refund="浅盘/生死盘（主让-0.5主流6家，马会-0.25）; no_refund（马会48为half_refund）"), "other_domestic:even_shallow")
         self.assertEqual(norm(league="欧国联", league_tier="国家队赛事", ah_tier_and_refund="主让半球浅/中盘；no_refund；六家半球、马会半一"), "national_team:even_shallow")
         self.assertEqual(norm(league="西甲", league_tier="五大联赛", ah_tier_and_refund="中盘/客让半球 ; no_refund"), "top5:even_shallow")
+        self.assertEqual(norm(league="欧国联", league_tier="国家队赛事", ah_tier_and_refund="浅盘(-0.25) 5/6家主高水 ; half_refund"), "national_team:even_shallow")
         self.assertEqual(norm(league="", league_tier="", ah_tier_and_refund=""), "unknown")
 
     def test_parse_timestamp_fractional_seconds_and_invalid_calendar(self) -> None:
@@ -641,7 +642,17 @@ class TestContextualBayesianExploration(unittest.TestCase):
             self.assertTrue(all("contexts" not in e for e in rep_def["entities"]))
 
             rep_bkt = _MOD.bayesian_health_report(ledger_path=str(empty_ledger), context_bucket="top5:mid")
+            self.assertEqual(len(rep_bkt["entities"]), 2)
+            self.assertEqual({e["entity_id"] for e in rep_bkt["entities"]}, {"playbooks/winner.md", "playbooks/loser.md"})
             self.assertTrue(all("contexts" in e and list(e["contexts"].keys()) == ["top5:mid"] for e in rep_bkt["entities"]))
+            # Explicit entity_ids still allows zero-obs verification in a target context_bucket
+            rep_bkt_explicit = _MOD.bayesian_health_report(
+                ledger_path=str(empty_ledger),
+                context_bucket="top5:mid",
+                entity_ids=["playbooks/crushing-vig-suppression.md"],
+            )
+            self.assertEqual(len(rep_bkt_explicit["entities"]), 1)
+            self.assertEqual(rep_bkt_explicit["entities"][0]["contexts"]["top5:mid"]["n_obs"], 0)
 
             rep_full = _MOD.bayesian_health_report(ledger_path=str(empty_ledger), include_contexts=True)
             self.assertTrue(all("contexts" in e for e in rep_full["entities"]))
@@ -762,6 +773,106 @@ class TestContextualBayesianExploration(unittest.TestCase):
             self.assertEqual(sel_feat["residual_seat"], "playbooks/false-favorite-trap.md")
             self.assertIn("features/de-vigging-oo-epc.md", sel_feat["shadow_candidates"])
             self.assertIn("H1", sel_feat["shadow_candidates"])
+
+    def test_sync_and_bootstrap_honor_frozen_wiki_scan_context_bucket(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            day = root / "data" / "2026-11-15"
+            cards = day / "cards"
+            cards.mkdir(parents=True)
+            (day / "meta.md").write_text(
+                "<!-- SCRAPER:SCHEDULE:START -->\n"
+                "| 场次编号 | 比赛 ID | 联赛 | 主队 | 客队 | 开球时间 | 状态 | 数据状态 | Polymarket |\n"
+                "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+                "| 周日010 | 2981468 | 欧国联 | 西班牙 | 英格兰 | 2026-11-15 22:00 | 已完场 (0:2, 半0:1) | [已推演] | [官方未开盘] |\n"
+                "| 周日011 | 2981469 | 欧国联 | 球队甲 | 球队乙 | 2026-11-15 22:00 | 已完场 (1:0, 半0:0) | [已推演] | [官方未开盘] |\n"
+                "| 周日012 | 2981470 | 欧国联 | 球队丙 | 球队丁 | 2026-11-15 22:00 | 已完场 (1:1, 半1:1) | [已推演] | [官方未开盘] |\n"
+                "<!-- SCRAPER:SCHEDULE:END -->\n",
+                encoding="utf-8",
+            )
+            # Card 1: frozen Stage-2 wiki_scan.context_bucket='national_team:mid' despite -0.5 numeric line
+            (cards / "2981468.yaml").write_text(
+                "announce:\n"
+                "  memory_summary:\n"
+                "    identity: { matchId: '2981468', league: '欧国联', kickoffTime: '2026-11-15 22:00' }\n"
+                "    regime: { league_tier: '国家队赛事', ah_tier_and_refund: '中盘(-0.5) ; no_refund' }\n"
+                "    data_ref: { odds_cutoff: '2026-11-15T21:00:00+08:00', research: { analysis_phase: 'prematch' } }\n"
+                "    decision:\n"
+                "      primary: '负'\n"
+                "      three_dimensions: { margin: '英格兰 +0.5' }\n"
+                "      probabilities: { home: 0.49, draw: 0.25, away: 0.26 }\n"
+                "    wiki_scan:\n"
+                "      matched: 4\n"
+                "      context_bucket: 'national_team:mid'\n"
+                "      exploration_mode: 'bayes_ucb'\n"
+                "      residual_selected: 'playbooks/head-fake.md'\n"
+                "      shadow_candidates: [{ page: 'H1', direction: '客不败' }]\n"
+                "    wiki_hits:\n"
+                "      - { role: 'primary', page: 'playbooks/false-favorite-trap.md', direction: '客胜' }\n"
+                "      - { role: 'feature', page: 'features/de-vigging-oo-epc.md', direction: '主胜' }\n",
+                encoding="utf-8",
+            )
+            # Card 2: legacy card omitting wiki_scan.context_bucket -> preserves _enrich_ah_regime (-0.5 -> even_shallow)
+            (cards / "2981469.yaml").write_text(
+                "announce:\n"
+                "  memory_summary:\n"
+                "    identity: { matchId: '2981469', league: '欧国联', kickoffTime: '2026-11-15 22:00' }\n"
+                "    regime: { league_tier: '国家队赛事', ah_tier_and_refund: '中盘 ; no_refund' }\n"
+                "    data_ref: { odds_cutoff: '2026-11-15T21:00:00+08:00', research: { analysis_phase: 'prematch' } }\n"
+                "    decision:\n"
+                "      primary: '胜'\n"
+                "      three_dimensions: { margin: '球队甲 -0.5' }\n"
+                "      probabilities: { home: 0.50, draw: 0.26, away: 0.24 }\n"
+                "    wiki_scan: { matched: 1 }\n"
+                "    wiki_hits: []\n",
+                encoding="utf-8",
+            )
+            # Card 3: invalid wiki_scan.context_bucket string -> safe fallback without crashing
+            (cards / "2981470.yaml").write_text(
+                "announce:\n"
+                "  memory_summary:\n"
+                "    identity: { matchId: '2981470', league: '欧国联', kickoffTime: '2026-11-15 22:00' }\n"
+                "    regime: { league_tier: '国家队赛事', ah_tier_and_refund: '浅盘(-0.25) ; half_refund' }\n"
+                "    data_ref: { odds_cutoff: '2026-11-15T21:00:00+08:00', research: { analysis_phase: 'prematch' } }\n"
+                "    decision:\n"
+                "      primary: '平'\n"
+                "      three_dimensions: { margin: '球队丁 +0.25' }\n"
+                "      probabilities: { home: 0.36, draw: 0.32, away: 0.32 }\n"
+                "    wiki_scan: { matched: 3, context_bucket: 'not_a_real_bucket' }\n"
+                "    wiki_hits: []\n",
+                encoding="utf-8",
+            )
+
+            b_sync = root / "data" / "bayesian_tracker.jsonl"
+            res = _MOD.sync_day_ledgers("2026-11-15", str(root))
+            self.assertEqual(res["status"], "ok")
+            sync_rows, sync_err = _MOD.BayesianTrackerEngine.load_ledger(b_sync)
+            self.assertIsNone(sync_err)
+            r_1468 = [r for r in sync_rows if r["match_id"] == "2981468"]
+            self.assertEqual(len(r_1468), 3)
+            self.assertTrue(all(r["context_bucket"] == "national_team:mid" and r["ah_tier"] == "mid" for r in r_1468))
+            r_1469 = [r for r in sync_rows if r["match_id"] == "2981469"]
+            self.assertEqual(r_1469[0]["context_bucket"], "national_team:even_shallow")
+            r_1470 = [r for r in sync_rows if r["match_id"] == "2981470"]
+            self.assertEqual(r_1470[0]["context_bucket"], "national_team:even_shallow")
+
+            b_boot = root / "data" / "bayesian_boot.jsonl"
+            cnt, msg = _MOD.BayesianTrackerEngine.bootstrap_from_repo(str(root), str(b_boot))
+            self.assertEqual(cnt, 5, msg)
+            boot_rows, boot_err = _MOD.BayesianTrackerEngine.load_ledger(b_boot)
+            self.assertIsNone(boot_err)
+            # Full row-for-row parity between sync_day_ledgers and bootstrap_from_repo across ALL 3 cards
+            # (including enrich_ah_regime on legacy 2981469 and skipping non-primary/residual 'feature' wiki_hits on 2981468!)
+            key_fn = lambda r: (
+                r["match_id"], r["entity_id"], r["observation_role"],
+                r["context_bucket"], r["ah_tier"], r["league_tier"], r["hit"],
+            )
+            self.assertEqual(sorted(key_fn(r) for r in sync_rows), sorted(key_fn(r) for r in boot_rows))
+            self.assertFalse(any(r["entity_id"].startswith("features/") for r in boot_rows))
+            b_1469 = [r for r in boot_rows if r["match_id"] == "2981469"]
+            self.assertEqual(b_1469[0]["context_bucket"], "national_team:even_shallow")
+            b_1470 = [r for r in boot_rows if r["match_id"] == "2981470"]
+            self.assertEqual(b_1470[0]["context_bucket"], "national_team:even_shallow")
 
 
 if __name__ == "__main__":

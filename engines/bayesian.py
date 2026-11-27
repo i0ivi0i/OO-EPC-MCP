@@ -34,6 +34,7 @@ from .context import (
     VALID_CONTEXT_BUCKETS,
     VALID_OBSERVATION_ROLES,
     _evaluate_context_from_stats,
+    enrich_ah_regime,
     normalize_context_bucket,
     resolve_context_parts,
 )
@@ -575,6 +576,9 @@ class BayesianTrackerEngine:
             etype = cls.infer_entity_type(eid, explicit_t)
             if filter_type and etype != filter_type:
                 continue
+            if filter_ctx is not None and want is None and not include_contexts:
+                if not any(clean_str(r.get("context_bucket")).lower() == filter_ctx for r in erows):
+                    continue
             matched_rows.extend(erows)
             summary = cls.evaluate_entity(
                 eid, etype, erows,
@@ -885,11 +889,16 @@ class BayesianTrackerEngine:
             ct_iso = oc_dt.astimezone(BJ_TZ).isoformat()
             src_card = f"data/{sales_date}/cards/{mid}.yaml"
 
-            regime = ms.get("regime") or {}
+            regime = ms.get("regime") if isinstance(ms.get("regime"), dict) else {}
+            ws = ms.get("wiki_scan") if isinstance(ms.get("wiki_scan"), dict) else {}
+            td = dec.get("three_dimensions") if isinstance(dec.get("three_dimensions"), dict) else {}
+            ah_pick = clean_str(td.get("margin")) if td.get("margin") else ""
+            ah_regime = enrich_ah_regime(clean_str(regime.get("ah_tier_and_refund")), ah_pick)
             lt, at, cb = resolve_context_parts(
+                context_bucket=ws.get("context_bucket"),
                 league=ident.get("league", ""),
                 league_tier=regime.get("league_tier", ""),
-                ah_tier_and_refund=regime.get("ah_tier_and_refund", ""),
+                ah_tier_and_refund=ah_regime,
             )
 
             def _append_1x2_obs(
@@ -936,12 +945,14 @@ class BayesianTrackerEngine:
                     obs_role = role_override
                 else:
                     raw_role = clean_str(item.get("role")).lower()
-                    obs_role = raw_role if raw_role in ("primary", "residual") else "primary"
+                    if raw_role not in ("primary", "residual"):
+                        return
+                    obs_role = raw_role
                 _append_1x2_obs(eid, cls.infer_entity_type(eid), direction, direction, obs_role)
 
             for h in (ms.get("wiki_hits") or []):
                 _append_candidate(h, None)
-            for s_item in ((ms.get("wiki_scan") or {}).get("shadow_candidates") or []):
+            for s_item in (ws.get("shadow_candidates") or []):
                 _append_candidate(s_item, "shadow")
 
         rows.sort(key=cls.sort_key)

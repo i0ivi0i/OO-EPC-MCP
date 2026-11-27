@@ -10,18 +10,17 @@ from typing import Any, Dict, List, Optional
 from .bayesian import BayesianTrackerEngine
 from .common import (
     BJ_TZ,
-    CLASSES,
     clean_str,
     is_valid_sales_date,
     iter_settled_prematch_cards,
 )
 from .conformal import ConformalEngine
+from .context import enrich_ah_regime
 
 _DRAFT_LINE_RE = re.compile(
     r"^\*\s*\[(H\d+)\b.*?stale_after:\s*([0-9T:\-+Z]+)",
     flags=re.IGNORECASE,
 )
-_NUM_OR_SPLIT_RE = re.compile(r"([+-]?)\s*(\d+(?:\.\d+)?)(?:\s*/\s*(\d+(?:\.\d+)?))?")
 
 
 def _clean_direction(raw: Any) -> str:
@@ -29,21 +28,7 @@ def _clean_direction(raw: Any) -> str:
     return re.sub(r"[（(][^）)]*[）)]$", "", clean_str(raw)).strip()
 
 
-def _enrich_ah_regime(ah_regime: str, ah_pick: str) -> str:
-    """Attach numeric line from card AH pick when regime text omitted digits (preserves 12-bucket accuracy)."""
-    if not ah_regime or re.search(r"\d", ah_regime) or not ah_pick:
-        return ah_regime
-    cleaned = re.sub(r"[（(][^）)]*[）)]", " ", ah_pick)
-    m = _NUM_OR_SPLIT_RE.search(cleaned)
-    if not m:
-        return ah_regime
-    sign_s, a_s, b_s = m.groups()
-    mag = (float(a_s) + float(b_s)) / 2.0 if b_s is not None else float(a_s)
-    line_str = f"{-abs(mag):g}" if mag != 0.0 else "0.0"
-    if ";" in ah_regime:
-        first, rest = ah_regime.split(";", 1)
-        return f"{first.strip()}({line_str}) ;{rest}"
-    return f"{ah_regime.strip()}({line_str})"
+_enrich_ah_regime = enrich_ah_regime
 
 
 def _load_wiki_draft_metadata(repo_root: pathlib.Path) -> Dict[str, Dict[str, Any]]:
@@ -125,6 +110,8 @@ def sync_day_ledgers(
         league = clean_str(ident.get("league"))
         regime = ms.get("regime") if isinstance(ms.get("regime"), dict) else {}
         league_tier = clean_str(regime.get("league_tier"))
+        ws = ms.get("wiki_scan") if isinstance(ms.get("wiki_scan"), dict) else {}
+        frozen_cb_raw = ws.get("context_bucket")
         # Enrich ah_tier_and_refund if card omitted numeric handicap line.
         ah_pick = ""
         td = dec.get("three_dimensions") if isinstance(dec.get("three_dimensions"), dict) else {}
@@ -152,26 +139,45 @@ def sync_day_ledgers(
         conformal_records.append(c_rec)
 
         seen_eids = set()
+
+        def _append_bayesian_rec(
+            eid: str,
+            direction: str,
+            indices: Any,
+            wins: Any,
+            obs_role: str,
+        ) -> None:
+            bayesian_records.append(
+                {
+                    "match_id": mid,
+                    "sales_date": card_sd,
+                    "kickoff_at": ko_iso,
+                    "cutoff_time": ct_iso,
+                    "entity_id": eid,
+                    "direction": direction,
+                    "p_baseline": round(sum(norm_p[i] for i in indices), 6),
+                    "hit": 1 if outcome in wins else 0,
+                    "observation_role": obs_role,
+                    "league": league,
+                    "league_tier": league_tier,
+                    "ah_tier_and_refund": ah_regime,
+                    "context_bucket": frozen_cb_raw,
+                    "source_card": src_card,
+                    "known_answer_replay": False,
+                }
+            )
+            seen_eids.add(eid)
+
         primary = clean_str(dec.get("primary"))
         if primary in BayesianTrackerEngine._PRIMARY_DIR_LABELS:
             p_indices, p_wins = BayesianTrackerEngine._DIR_1X2_MAP[primary]
-            bayesian_records.append({
-                "match_id": mid,
-                "sales_date": card_sd,
-                "kickoff_at": ko_iso,
-                "cutoff_time": ct_iso,
-                "entity_id": "portfolio:1x2_primary",
-                "direction": BayesianTrackerEngine._PRIMARY_DIR_LABELS[primary],
-                "p_baseline": round(sum(norm_p[i] for i in p_indices), 6),
-                "hit": 1 if outcome in p_wins else 0,
-                "observation_role": "primary",
-                "league": league,
-                "league_tier": league_tier,
-                "ah_tier_and_refund": ah_regime,
-                "source_card": src_card,
-                "known_answer_replay": False,
-            })
-            seen_eids.add("portfolio:1x2_primary")
+            _append_bayesian_rec(
+                "portfolio:1x2_primary",
+                BayesianTrackerEngine._PRIMARY_DIR_LABELS[primary],
+                p_indices,
+                p_wins,
+                "primary",
+            )
 
         def _maybe_add(item: Any, role_override: Optional[str]) -> None:
             if not isinstance(item, dict):
@@ -190,27 +196,11 @@ def sync_day_ledgers(
             if norm_dir not in BayesianTrackerEngine._DIR_1X2_MAP:
                 return
             idxs, wins = BayesianTrackerEngine._DIR_1X2_MAP[norm_dir]
-            bayesian_records.append({
-                "match_id": mid,
-                "sales_date": card_sd,
-                "kickoff_at": ko_iso,
-                "cutoff_time": ct_iso,
-                "entity_id": eid,
-                "direction": norm_dir,
-                "p_baseline": round(sum(norm_p[i] for i in idxs), 6),
-                "hit": 1 if outcome in wins else 0,
-                "observation_role": obs_role,
-                "league": league,
-                "league_tier": league_tier,
-                "ah_tier_and_refund": ah_regime,
-                "source_card": src_card,
-                "known_answer_replay": False,
-            })
-            seen_eids.add(eid)
+            _append_bayesian_rec(eid, norm_dir, idxs, wins, obs_role)
 
         for hit_item in (ms.get("wiki_hits") or []):
             _maybe_add(hit_item, None)
-        for sh_item in ((ms.get("wiki_scan") or {}).get("shadow_candidates") or []):
+        for sh_item in (ws.get("shadow_candidates") or []):
             _maybe_add(sh_item, "shadow")
 
     if conformal_records:

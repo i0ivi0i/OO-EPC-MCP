@@ -106,7 +106,7 @@ def normalize_ah_tier(ah_tier_and_refund: Any = "") -> str:
         t = re.sub(r"\b(?:full|half|no)_refund\b", " ", t, flags=re.IGNORECASE)
         t = re.sub(r"\b188bet\b", " ", t, flags=re.IGNORECASE)
         t = re.sub(r"\bcid[:=\s]*\d+(?:\s*[/,]\s*\d+)*", " ", t, flags=re.IGNORECASE)
-        t = re.sub(r"(?<![.\d-])\d+\s*家", " ", t)
+        t = re.sub(r"(?<![.\d-])\d+(?:\s*/\s*\d+)*\s*家", " ", t)
         t = re.sub(r"[（(]\s*\d+(?:\s*/\s*\d+)*\s*[）)]", " ", t)
         t = re.sub(r"(?<![.\d-])\d+(?:\s*/\s*\d+)+(?![.\d])", " ", t)
         return re.sub(r"^[，,\s]+|[，,\s]+$", "", re.sub(r"\s+", " ", t))
@@ -160,6 +160,26 @@ def normalize_ah_tier(ah_tier_and_refund: Any = "") -> str:
         return None
 
     return _classify_from_text(step) or _classify_from_text(chosen_clause) or _classify_from_text(head) or "unknown"
+
+
+_ENRICH_NUM_OR_SPLIT_RE = re.compile(r"([+-]?)\s*(\d+(?:\.\d+)?)(?:\s*/\s*(\d+(?:\.\d+)?))?")
+
+
+def enrich_ah_regime(ah_regime: str, ah_pick: str) -> str:
+    """Attach numeric line from card AH pick when regime text omitted digits (shared by sync and bootstrap)."""
+    if not ah_regime or re.search(r"\d", ah_regime) or not ah_pick:
+        return ah_regime
+    cleaned = re.sub(r"[（(][^）)]*[）)]", " ", ah_pick)
+    m = _ENRICH_NUM_OR_SPLIT_RE.search(cleaned)
+    if not m:
+        return ah_regime
+    _, a_s, b_s = m.groups()
+    mag = (float(a_s) + float(b_s)) / 2.0 if b_s is not None else float(a_s)
+    line_str = f"{-abs(mag):g}" if mag != 0.0 else "0.0"
+    if ";" in ah_regime:
+        first, rest = ah_regime.split(";", 1)
+        return f"{first.strip()}({line_str}) ;{rest}"
+    return f"{ah_regime.strip()}({line_str})"
 
 
 def resolve_context_parts(
