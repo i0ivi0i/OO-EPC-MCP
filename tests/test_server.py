@@ -246,6 +246,67 @@ class TestConformalEngine(unittest.TestCase):
             self.assertAlmostEqual(custom["alpha_target"], 0.12, places=6)
             self.assertAlmostEqual(custom["alpha_t"], 0.12, places=6)
 
+    def test_venn_abers_overlap_false_on_clear_favorite_separation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ledger = pathlib.Path(td) / "ledger.jsonl"
+            recs = self._make_records(
+                60,
+                probs_fn=lambda i: [0.78, 0.14, 0.08] if (i % 5) != 0 else [0.35, 0.35, 0.30],
+                outcome_fn=lambda i: "H" if (i % 5) != 0 else ("D" if (i % 10) == 0 else "A"),
+            )
+            _MOD.conformal_record_outcomes(recs, ledger_path=str(ledger))
+            res = _MOD.conformal_predict_1x2(
+                [0.78, 0.14, 0.08],
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger),
+            )
+            va = res["venn_abers"]
+            self.assertEqual(va["status"], "ok")
+            self.assertEqual(va["top1_class"], "H")
+            self.assertIn(va["max_other_hi_class"], ("D", "A"))
+            self.assertGreater(va["top1_lo_vs_other_max_hi_gap"], 0.0)
+            self.assertFalse(va["top1_lo_vs_other_max_hi_overlap"])
+
+    def test_venn_abers_overlap_true_catches_top3_hi_inversion(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ledger = pathlib.Path(td) / "ledger.jsonl"
+            # Construct a ledger where raw top3 ('D', p=0.25) hits often (high calibrated hi_D),
+            # raw top2 ('A', p=0.30) rarely hits (low calibrated hi_A), and top1 ('H', p=0.45) has lo_H <= hi_D.
+            recs = self._make_records(
+                60,
+                probs_fn=lambda i: [0.45, 0.25, 0.30],
+                outcome_fn=lambda i: "H" if (i % 10) < 4 else ("D" if (i % 10) < 9 else "A"),
+            )
+            _MOD.conformal_record_outcomes(recs, ledger_path=str(ledger))
+            res = _MOD.conformal_predict_1x2(
+                [0.45, 0.25, 0.30],
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger),
+            )
+            va = res["venn_abers"]
+            self.assertEqual(va["status"], "ok")
+            self.assertEqual(va["top1_class"], "H")
+            self.assertGreater(va["intervals_1x2"]["D"][1], va["intervals_1x2"]["A"][1])
+            self.assertEqual(va["max_other_hi_class"], "D")
+            self.assertLessEqual(va["top1_lo_vs_other_max_hi_gap"], 0.0)
+            self.assertTrue(va["top1_lo_vs_other_max_hi_overlap"])
+
+    def test_venn_abers_unready_sets_overlap_fields_to_none(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ledger = pathlib.Path(td) / "ledger.jsonl"
+            _MOD.conformal_record_outcomes(self._make_records(25), ledger_path=str(ledger))
+            res = _MOD.conformal_predict_1x2(
+                [0.64, 0.21, 0.15],
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger),
+            )
+            va = res["venn_abers"]
+            self.assertEqual(va["status"], "unready")
+            self.assertIsNone(va["top1_class"])
+            self.assertIsNone(va["max_other_hi_class"])
+            self.assertIsNone(va["top1_lo_vs_other_max_hi_gap"])
+            self.assertIsNone(va["top1_lo_vs_other_max_hi_overlap"])
+
 
 class TestBayesianTrackerEngine(unittest.TestCase):
     @staticmethod

@@ -782,8 +782,14 @@ class BayesianTrackerEngine:
         score_key = "sampled_excess" if sel_mode == "contextual_ts" else "ucb_excess"
         if eval_map:
             ordered_items = [eval_map[eid] for eid in valid_ids]
-            non_draft_primary = [x for x in ordered_items if x["entity_type"] != "draft"]
-            primary_pool = non_draft_primary or ordered_items
+
+            def _prefer(pool: List[Dict[str, Any]], pred: Any) -> List[Dict[str, Any]]:
+                return [x for x in pool if pred(x)] or pool
+
+            def _prefer_playable(pool: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                return _prefer(_prefer(pool, lambda x: x["entity_type"] != "draft"), lambda x: x["entity_type"] == "playbook")
+
+            primary_pool = _prefer_playable(ordered_items)
 
             def _select_best_with_tie(
                 cand_pool: List[Dict[str, Any]], score_fn: Any
@@ -804,8 +810,9 @@ class BayesianTrackerEngine:
 
             rem = [x for x in ordered_items if x["entity_id"] != primary_seat]
             if rem:
-                non_alert = [x for x in rem if x["advisory_status_global"] != "DRIFT_ALERT"]
-                best_residual, tie_break_residual = _select_best_with_tie(non_alert or rem, _r_score)
+                residual_pool = _prefer_playable(rem)
+                residual_candidates = _prefer(residual_pool, lambda x: x["advisory_status_global"] != "DRIFT_ALERT")
+                best_residual, tie_break_residual = _select_best_with_tie(residual_candidates, _r_score)
                 residual_seat = best_residual["entity_id"]
 
             shadow_items = [x for x in rem if x["entity_id"] != residual_seat]
@@ -924,7 +931,7 @@ class BayesianTrackerEngine:
                 eid = cls.normalize_entity_id(item.get("page"))
                 if not eid or not (eid.startswith("playbooks/") or eid.startswith("H")):
                     return
-                direction = clean_str(item.get("direction"))
+                direction = re.sub(r"[（(][^）)]*[）)]$", "", clean_str(item.get("direction"))).strip()
                 if role_override is not None:
                     obs_role = role_override
                 else:

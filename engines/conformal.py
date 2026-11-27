@@ -143,6 +143,19 @@ class ConformalEngine:
 
         return round(min(results), 6), round(max(results), 6)
 
+    @staticmethod
+    def _unready_venn_abers(min_required: int, note: str) -> Dict[str, Any]:
+        return {
+            "status": "unready",
+            "min_required": min_required,
+            "note": note,
+            "intervals_1x2": None,
+            "top1_class": None,
+            "max_other_hi_class": None,
+            "top1_lo_vs_other_max_hi_gap": None,
+            "top1_lo_vs_other_max_hi_overlap": None,
+        }
+
     @classmethod
     def predict_1x2(
         cls,
@@ -244,12 +257,10 @@ class ConformalEngine:
                     "class_cov": {c: None for c in cls.CLASSES},
                     "draw_under_coverage_alert": False,
                 },
-                "venn_abers": {
-                    "status": "unready",
-                    "min_required": min_venn_abers,
-                    "note": "Marginal 1-vs-rest calibrated intervals (do not sum to 1.0).",
-                    "intervals_1x2": None,
-                },
+                "venn_abers": cls._unready_venn_abers(
+                    min_venn_abers,
+                    "Marginal 1-vs-rest calibrated intervals (do not sum to 1.0).",
+                ),
             }
 
         assert norm_probs is not None
@@ -279,19 +290,27 @@ class ConformalEngine:
                 pairs = [(float(r["probs"][k]), 1 if r["outcome"] == cname else 0) for r in causal_rows]
                 lo, hi = cls._pav_venn_abers_binary(pairs, norm_probs[k])
                 intervals[cname] = [lo, hi]
+            top1_idx = max(range(3), key=lambda k: (norm_probs[k], -k))
+            top1_cls = cls.CLASSES[top1_idx]
+            others = [c for c in cls.CLASSES if c != top1_cls]
+            max_other_hi_cls = max(others, key=lambda c: (intervals[c][1], -cls.CLASSES.index(c)))
+            gap = round(intervals[top1_cls][0] - intervals[max_other_hi_cls][1], 6)
+            overlap = bool(intervals[top1_cls][0] <= intervals[max_other_hi_cls][1] + 1e-12)
             va_block: Dict[str, Any] = {
                 "status": "ok",
                 "min_required": min_venn_abers,
                 "note": "Marginal 1-vs-rest Laplace-smoothed PAV intervals in (0, 1); do not sum to 1.0.",
                 "intervals_1x2": intervals,
+                "top1_class": top1_cls,
+                "max_other_hi_class": max_other_hi_cls,
+                "top1_lo_vs_other_max_hi_gap": gap,
+                "top1_lo_vs_other_max_hi_overlap": overlap,
             }
         else:
-            va_block = {
-                "status": "unready",
-                "min_required": min_venn_abers,
-                "note": "Marginal 1-vs-rest Laplace-smoothed PAV intervals require >= 50 causal samples.",
-                "intervals_1x2": None,
-            }
+            va_block = cls._unready_venn_abers(
+                min_venn_abers,
+                "Marginal 1-vs-rest Laplace-smoothed PAV intervals require >= 50 causal samples.",
+            )
 
         return {
             "status": "ok",

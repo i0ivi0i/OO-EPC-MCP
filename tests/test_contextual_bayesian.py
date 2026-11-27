@@ -131,7 +131,7 @@ class TestContextualBayesianExploration(unittest.TestCase):
             self.assertIsNone(err)
             ev_zero = _MOD.evaluate_context(loaded, "playbooks/false-favorite-trap.md", "national_team:mid")
             self.assertAlmostEqual(ev_zero["p_0c_anchor"], 0.50, places=6)
-            self.assertAlmostEqual(ev_zero["prior_center"], 0.7492, places=3)
+            self.assertAlmostEqual(ev_zero["prior_center"], 14.0 / 19.0, places=3)
 
             res2 = _MOD.bayesian_record_outcomes(
                 self._make_ctx_obs(
@@ -199,8 +199,10 @@ class TestContextualBayesianExploration(unittest.TestCase):
             self.assertEqual(by_id["playbooks/tree-c.md"]["advisory_status_global"], "DRIFT_ALERT")
             self.assertGreater(by_id["playbooks/tree-c.md"]["ucb_excess"], by_id["playbooks/tree-b.md"]["ucb_excess"])
             self.assertEqual(sel["primary_seat"], "playbooks/tree-a.md")
-            self.assertEqual(sel["residual_seat"], "H1")
-            self.assertEqual(sel["shadow_candidates"], ["playbooks/tree-c.md", "playbooks/tree-b.md"])
+            # Draft H1 must NOT hijack residual_seat when healthy non-draft playbooks exist!
+            self.assertEqual(sel["residual_seat"], "playbooks/tree-b.md")
+            self.assertIn("H1", sel["shadow_candidates"])
+            self.assertIn("playbooks/tree-c.md", sel["shadow_candidates"])
             self.assertTrue(sel["exploration_triggered"])
 
             # Without H1, tree-c STILL beats tree-b on ucb_excess yet tree-b MUST win residual_seat
@@ -687,6 +689,79 @@ class TestContextualBayesianExploration(unittest.TestCase):
             self.assertNotEqual(sel_alert["residual_seat"], "playbooks/head-fake.md")
             self.assertEqual(sel_alert["shadow_candidates"], ["playbooks/draw-compression-lock.md", "playbooks/head-fake.md"])
 
+    def test_leave_context_out_smoothing_eliminates_zero_of_one_cliff(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ledger = pathlib.Path(td) / "bayes_lco.jsonl"
+            # Single miss 0/1 at p0=0.7613 in continental_cup:deep
+            _MOD.bayesian_record_outcomes(
+                self._make_ctx_obs(
+                    "playbooks/false-favorite-trap.md",
+                    [0],
+                    p_baseline=0.7613,
+                    start_id=3970000,
+                    context_bucket="continental_cup:deep",
+                ),
+                ledger_path=str(ledger),
+            )
+            # Two misses 0/2 at the same p0=0.7613 in continental_cup:deep
+            _MOD.bayesian_record_outcomes(
+                self._make_ctx_obs(
+                    "playbooks/deep-water-resistance.md",
+                    [0, 0],
+                    p_baseline=0.7613,
+                    start_id=3970100,
+                    context_bucket="continental_cup:deep",
+                ),
+                ledger_path=str(ledger),
+            )
+            sel_in = _MOD.bayesian_select_playbooks(
+                candidate_ids=["playbooks/false-favorite-trap.md", "playbooks/deep-water-resistance.md", "playbooks/head-fake.md"],
+                context_bucket="continental_cup:deep",
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger),
+                mode="bayes_ucb",
+            )
+            by_in = {c["entity_id"]: c for c in sel_in["candidates"]}
+            # Exact conjugate single-count update without double-counting or 0.02 logit blowup:
+            # (4 * 0.7613) / 5 - 0.7613 = -0.15226 (strictly better than old -0.3315 cliff!)
+            self.assertGreater(by_in["playbooks/false-favorite-trap.md"]["exploit_score"], -0.16)
+            # Strictly monotonic: 0/1 must outrank 0/2 at identical baseline difficulty!
+            self.assertGreater(
+                by_in["playbooks/false-favorite-trap.md"]["exploit_score"],
+                by_in["playbooks/deep-water-resistance.md"]["exploit_score"],
+            )
+            # Out-of-bucket zero-shot query must match in-bucket score (no double-counting!)
+            sel_out = _MOD.bayesian_select_playbooks(
+                candidate_ids=["playbooks/false-favorite-trap.md", "playbooks/head-fake.md"],
+                context_bucket="top5:mid",
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger),
+                mode="bayes_ucb",
+            )
+            by_out = {c["entity_id"]: c for c in sel_out["candidates"]}
+            self.assertAlmostEqual(
+                by_in["playbooks/false-favorite-trap.md"]["exploit_score"],
+                by_out["playbooks/false-favorite-trap.md"]["exploit_score"],
+                places=5,
+            )
+
+            # Route-9 feature IDs and H-drafts must NOT hijack primary_seat or residual_seat when playbooks exist
+            sel_feat = _MOD.bayesian_select_playbooks(
+                candidate_ids=[
+                    "features/de-vigging-oo-epc.md",
+                    "H1",
+                    "playbooks/head-fake.md",
+                    "playbooks/false-favorite-trap.md",
+                ],
+                context_bucket="continental_cup:deep",
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger),
+                mode="bayes_ucb",
+            )
+            self.assertEqual(sel_feat["primary_seat"], "playbooks/head-fake.md")
+            self.assertEqual(sel_feat["residual_seat"], "playbooks/false-favorite-trap.md")
+            self.assertIn("features/de-vigging-oo-epc.md", sel_feat["shadow_candidates"])
+            self.assertIn("H1", sel_feat["shadow_candidates"])
 
 
 if __name__ == "__main__":

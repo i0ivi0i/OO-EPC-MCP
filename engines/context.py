@@ -211,14 +211,21 @@ def _evaluate_context_from_stats(
     g_anchor = mean_p0_global if (n_global > 0 and mean_p0_global is not None) else 0.50
     p_0c_anchor = mean_p0_c if mean_p0_c is not None else g_anchor
     m0 = max(0.5, float(prior_strength))
-    if n_global > 0:
-        w_shrink = n_global / (n_global + m0)
-        p_hat_global = clamp_prob(hits_global / n_global, P_MIN, P_MAX)
-        delta_logit = w_shrink * (logit(p_hat_global, P_MIN, P_MAX) - logit(g_anchor, P_MIN, P_MAX))
+    # Leave-context-out conjugate-smoothed transfer eliminates global/context double-counting
+    # and the unsmoothed 0/1 -> P_MIN=0.02 logit cliff.
+    n_other = max(0, n_global - n_c)
+    s_other = max(0, min(n_other, hits_global - s_c))
+    if n_other > 0:
+        if n_c > 0 and mean_p0_c is not None and mean_p0_global is not None:
+            raw_other_anchor = (n_global * mean_p0_global - n_c * mean_p0_c) / n_other
+            g_other_anchor = clamp_prob(raw_other_anchor, P_MIN, P_MAX)
+        else:
+            g_other_anchor = clamp_prob(g_anchor, P_MIN, P_MAX)
+        p_smooth_other = (s_other + m0 * g_other_anchor) / (n_other + m0)
+        delta_logit = logit(p_smooth_other, P_MIN, P_MAX) - logit(g_other_anchor, P_MIN, P_MAX)
+        mu_0c = clamp_prob(sigmoid(logit(p_0c_anchor, P_MIN, P_MAX) + delta_logit), P_MIN, P_MAX)
     else:
-        delta_logit = 0.0
-
-    mu_0c = clamp_prob(sigmoid(logit(p_0c_anchor, P_MIN, P_MAX) + delta_logit), P_MIN, P_MAX)
+        mu_0c = clamp_prob(p_0c_anchor, P_MIN, P_MAX)
     m_ctx = max(0.5, float(ctx_strength))
     a_c = m_ctx * mu_0c + s_c
     b_c = m_ctx * (1.0 - mu_0c) + (n_c - s_c)
