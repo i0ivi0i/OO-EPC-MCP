@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "oo-epc-mcp"
-version = "1.4.0"
+version = "1.5.0"
 description = "FastMCP server for sports betting odds de-vigging (Tokyo Univ Goto 2026 OO-EPC single & batch), conformal calibration (LAC/Mondrian/ACI/Venn-Abers), Bayesian/e-process lifecycle tracking, 12-bucket contextual hierarchical bandit routing (Bayes-UCB & seeded Thompson Sampling), and score probability modeling."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -588,5 +588,221 @@ class TestBayesianTrackerEngine(unittest.TestCase):
                 proc.wait(timeout=5)
 
 
+class TestProbsDictCompatibility(unittest.TestCase):
+    def test_normalize_probs_accepts_hda_and_home_draw_away_dicts(self) -> None:
+        p1, err1 = _MOD.ConformalEngine.normalize_probs({"H": 0.50, "D": 0.30, "A": 0.20})
+        self.assertIsNone(err1)
+        self.assertEqual([round(x, 6) for x in p1], [0.5, 0.3, 0.2])
+
+        p2, err2 = _MOD.ConformalEngine.normalize_probs({"home": 19.18, "draw": 20.71, "away": 60.11})
+        self.assertIsNone(err2)
+        self.assertAlmostEqual(p2[0], 0.1918, places=4)
+        self.assertAlmostEqual(p2[1], 0.2071, places=4)
+        self.assertAlmostEqual(p2[2], 0.6011, places=4)
+
+        p3, err3 = _MOD.ConformalEngine.normalize_probs({"h": 0.4, "d": 0.3, "a": 0.3})
+        self.assertIsNone(err3)
+        self.assertEqual([round(x, 6) for x in p3], [0.4, 0.3, 0.3])
+
+    def test_normalize_probs_rejects_malformed_dicts(self) -> None:
+        for bad in (
+            {"H": 0.5, "D": 0.5},
+            {"H": 0.5, "D": 0.3, "A": 0.2, "extra": 0.0},
+            {"H": 0.5, "draw": 0.3, "A": 0.2},
+            {},
+        ):
+            val, err = _MOD.ConformalEngine.normalize_probs(bad, context="bad_probs")
+            self.assertIsNone(val)
+            self.assertIsNotNone(err)
+            self.assertEqual(err["error_code"], "INVALID_PROBS_DICT")
+
+    def test_record_outcomes_accepts_dict_probs_and_persists_canonical_list(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ledger = pathlib.Path(td) / "conformal.jsonl"
+            recs = [
+                {
+                    "match_id": "3990001",
+                    "sales_date": "2026-11-26",
+                    "kickoff_at": "2026-11-27T01:45:00+08:00",
+                    "cutoff_time": "2026-11-26T20:39:22+08:00",
+                    "league": "欧罗巴杯",
+                    "probs": {"H": 0.1918, "D": 0.2071, "A": 0.6011},
+                    "outcome": "A",
+                    "source_card": "data/2026-11-26/cards/3990001.yaml",
+                    "known_answer_replay": False,
+                },
+                {
+                    "match_id": "3990002",
+                    "sales_date": "2026-11-26",
+                    "kickoff_at": "2026-11-27T04:00:00+08:00",
+                    "cutoff_time": "2026-11-26T20:39:22+08:00",
+                    "league": "欧罗巴杯",
+                    "probs": {"home": 0.7445, "draw": 0.1487, "away": 0.1068},
+                    "outcome": "H",
+                    "source_card": "data/2026-11-26/cards/3990002.yaml",
+                    "known_answer_replay": False,
+                },
+            ]
+            res = _MOD.conformal_record_outcomes(recs, ledger_path=str(ledger))
+            self.assertEqual(res["status"], "ok")
+            self.assertEqual(res["added_count"], 2)
+            self.assertEqual(res["skipped"], [])
+            rows, rerr = _MOD.ConformalEngine.load_ledger(ledger)
+            self.assertIsNone(rerr)
+            self.assertEqual(len(rows), 2)
+            self.assertIsInstance(rows[0]["probs"], list)
+            self.assertEqual(rows[0]["probs"], [0.1918, 0.2071, 0.6011])
+            self.assertEqual(rows[1]["probs"], [0.7445, 0.1487, 0.1068])
+
+    def test_predict_1x2_accepts_dict_probs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ledger = pathlib.Path(td) / "conformal.jsonl"
+            _MOD.conformal_record_outcomes(TestConformalEngine._make_records(25), ledger_path=str(ledger))
+            res = _MOD.conformal_predict_1x2(
+                {"H": 0.74, "D": 0.16, "A": 0.10},
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger),
+            )
+            self.assertEqual(res["status"], "ok")
+            self.assertEqual(res["set_size"], 1)
+            self.assertEqual(res["prediction_set"], ["H"])
+
+
+class TestSyncDayLedgers(unittest.TestCase):
+    @staticmethod
+    def _build_fixture_repo(root: pathlib.Path) -> None:
+        day = root / "data" / "2026-11-26"
+        cards = day / "cards"
+        cards.mkdir(parents=True)
+        (root / "skills" / "deep-analysis" / "wiki").mkdir(parents=True)
+        (root / "skills" / "deep-analysis" / "wiki" / "index.md").write_text(
+            "## 四、待验证池（OKF draft）\n"
+            "* [H1 · 测试假设1](playbooks/head-fake.md) - `Gap-1｜stale_after: 2026-11-26T00:00:00Z｜draft`\n"
+            "* [H5 · 测试假设5](playbooks/head-fake.md) - `Gap-3｜stale_after: 2026-12-17T00:00:00Z｜draft`\n",
+            encoding="utf-8",
+        )
+        (day / "meta.md").write_text(
+            "<!-- SCRAPER:SCHEDULE:START -->\n"
+            "| 场次编号 | 比赛 ID | 联赛 | 主队 | 客队 | 开球时间 | 状态 | 数据状态 | Polymarket |\n"
+            "| 周四004 | 3073720 | 欧罗巴杯 | 比尔森胜利 | 本菲卡 | 2026-11-27 01:45 | 已完场 (4:0, 半3:0) | [已推演] | [link](https://polymarket.com/event/x) |\n"
+            "| 周四005 | 3073761 | 欧罗巴杯 | 塞尔塔 | 伯恩茅斯 | 2026-11-27 01:45 | 已完场 (1:2, 半1:0) | [已推演] | [link](https://polymarket.com/event/y) |\n"
+            "<!-- SCRAPER:SCHEDULE:END -->\n",
+            encoding="utf-8",
+        )
+        (cards / "3073720.yaml").write_text(
+            "worker_receipt: { state: 'completed', matchId: '3073720' }\n"
+            "announce:\n"
+            "  memory_summary:\n"
+            "    identity: { matchId: '3073720', league: '欧罗巴杯', homeTeam: '比尔森胜利', awayTeam: '本菲卡', kickoffTime: '2026-11-27 01:45' }\n"
+            "    regime: { league_tier: '洲际杯赛', ah_tier_and_refund: '深盘(-1.25) ; half_refund' }\n"
+            "    data_ref: { odds_cutoff: '2026-11-26T20:39:22+08:00', research: { analysis_phase: 'prematch' } }\n"
+            "    decision:\n"
+            "      primary: '负'\n"
+            "      secondary: '平'\n"
+            "      probabilities: { home: 0.1557, draw: 0.1809, away: 0.6634 }\n"
+            "      conformal: { prediction_set: ['A'], alpha_t: 0.12 }\n"
+            "    wiki_hits:\n"
+            "      - { role: 'residual', page: 'skills/deep-analysis/wiki/playbooks/deep-water-resistance.md', direction: '平(纳入次选对冲)' }\n"
+            "      - { role: 'feature', page: 'skills/deep-analysis/wiki/features/asian-handicap-euro-mapping.md', direction: '受让不败' }\n",
+            encoding="utf-8",
+        )
+        (cards / "3073761.yaml").write_text(
+            "worker_receipt: { state: 'completed', matchId: '3073761' }\n"
+            "announce:\n"
+            "  memory_summary:\n"
+            "    identity: { matchId: '3073761', league: '欧罗巴杯', homeTeam: '塞尔塔', awayTeam: '伯恩茅斯', kickoffTime: '2026-11-27 01:45' }\n"
+            "    regime: { league_tier: '洲际杯赛', ah_tier_and_refund: '中盘 ; no_refund' }\n"
+            "    data_ref: { odds_cutoff: '2026-11-26T20:39:22+08:00', research: { analysis_phase: 'prematch' } }\n"
+            "    decision:\n"
+            "      primary: '负'\n"
+            "      secondary: '平'\n"
+            "      three_dimensions: { margin: '伯恩茅斯 -0.5' }\n"
+            "      probabilities: { home: 0.2354, draw: 0.2561, away: 0.5084 }\n"
+            "      conformal: { prediction_set: ['H', 'D', 'A'], alpha_t: 0.12 }\n"
+            "    wiki_hits:\n"
+            "      - { role: 'primary', page: 'skills/deep-analysis/wiki/playbooks/head-fake.md', direction: '客胜' }\n",
+            encoding="utf-8",
+        )
+
+    def test_sync_day_ledgers_idempotent_compact_and_auto_drafts(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._build_fixture_repo(root)
+            r1 = _MOD.sync_day_ledgers("2026-11-26", str(root), as_of="2026-11-27T04:00:00Z")
+            self.assertEqual(r1["status"], "ok")
+            self.assertEqual(r1["settled_card_count"], 2)
+            self.assertEqual(r1["conformal"]["added_count"], 2)
+            self.assertEqual(r1["bayesian"]["added_count"], 4)  # 2 portfolio + deep-water (parenthetical stripped!) + head-fake
+            self.assertIn("H1", r1["health"]["alerts"]["stale_reviews"])
+            self.assertIn("H5", r1["health"]["zero_obs_drafts"].get("COLLECTING", []))
+            self.assertLess(len(json.dumps(r1, ensure_ascii=False).encode("utf-8")), 4000)
+
+            # Second call is 100% idempotent
+            r2 = _MOD.sync_day_ledgers("2026-11-26", str(root), as_of="2026-11-27T04:00:00Z")
+            self.assertEqual(r2["status"], "ok")
+            self.assertEqual(r2["conformal"]["added_count"], 0)
+            self.assertEqual(r2["conformal"]["skipped_count"], 2)
+            self.assertEqual(r2["bayesian"]["added_count"], 0)
+            self.assertEqual(r2["bayesian"]["skipped_count"], 4)
+
+    def test_sync_day_ledgers_structured_errors(self) -> None:
+        bad_date = _MOD.sync_day_ledgers("2026/11/26", "C:/nonexistent")
+        self.assertEqual(bad_date["status"], "error")
+        self.assertEqual(bad_date["error"]["error_code"], "INVALID_SALES_DATE")
+        bad_root = _MOD.sync_day_ledgers("2026-11-26", "relative/path")
+        self.assertEqual(bad_root["status"], "error")
+        self.assertEqual(bad_root["error"]["error_code"], "INVALID_REPO_ROOT")
+
+    def test_sync_day_ledgers_stdio_mcp_smoke(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            self._build_fixture_repo(root)
+            proc = subprocess.Popen(
+                [sys.executable, str(_SERVER_PATH)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+            )
+            try:
+                assert proc.stdin and proc.stdout
+
+                def _rpc(msg: dict, expect_id: int | None = None) -> dict | None:
+                    assert proc.stdin and proc.stdout
+                    proc.stdin.write(json.dumps(msg) + "\n")
+                    proc.stdin.flush()
+                    if expect_id is None:
+                        return None
+                    for _ in range(15):
+                        line = proc.stdout.readline().strip()
+                        if not line:
+                            break
+                        obj = json.loads(line)
+                        if obj.get("id") == expect_id:
+                            return obj
+                    self.fail(f"Missing RPC response id={expect_id}")
+
+                _rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test", "version": "1.0"}}}, expect_id=1)
+                _rpc({"jsonrpc": "2.0", "method": "notifications/initialized"})
+                resp = _rpc(
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "sync_day_ledgers", "arguments": {"sales_date": "2026-11-26", "repo_root": str(root), "as_of": "2026-11-27T04:00:00Z"}}},
+                    expect_id=2,
+                )
+                payload = json.loads(resp["result"]["content"][0]["text"])
+                self.assertEqual(payload["status"], "ok")
+                self.assertEqual(payload["conformal"]["added_count"], 2)
+                self.assertEqual(payload["bayesian"]["added_count"], 4)
+            finally:
+                if proc.stdin:
+                    proc.stdin.close()
+                if proc.stdout:
+                    proc.stdout.close()
+                if proc.stderr:
+                    proc.stderr.close()
+                proc.terminate()
+                proc.wait(timeout=5)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -40,6 +40,7 @@ from .context import (
     resolve_context_parts,
 )
 from .devig import OoEpcCalculator, PoissonEngine
+from .sync import sync_day_ledgers
 
 __all__ = [
     "AH_TIERS",
@@ -80,4 +81,5 @@ __all__ = [
     "resolve_ledger_path",
     "select_playbooks",
     "sigmoid",
+    "sync_day_ledgers",
 ]

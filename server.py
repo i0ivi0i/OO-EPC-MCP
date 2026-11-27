@@ -6,7 +6,7 @@ import argparse
 import os
 import pathlib
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 _PKG_ROOT = str(pathlib.Path(__file__).resolve().parent)
 if _PKG_ROOT not in sys.path:
@@ -27,6 +27,7 @@ from engines import (  # noqa: E402
     normalize_league_tier,
     regularized_incomplete_beta,
     select_playbooks,
+    sync_day_ledgers as _sync_day_ledgers_engine,
 )
 
 try:
@@ -40,7 +41,7 @@ except ImportError:
 mcp = FastMCP(
     name="sports-math",
     description="Mathematical computation engine for sports betting odds devigging, score probability modeling, conformal calibration, and contextual Bayesian/e-process playbook selection.",
-    version="1.4.0",
+    version="1.5.0",
 )
 
 
@@ -85,7 +86,7 @@ def poisson_dixon_coles(home_lambda: float, away_lambda: float, max_goals: int =
 
 @mcp.tool()
 def conformal_predict_1x2(
-    probs: List[float],
+    probs: Union[List[float], Dict[str, float]],
     cutoff_time: Optional[str] = None,
     cutoff_sales_date: Optional[str] = None,
     alpha: float = 0.20,
@@ -95,7 +96,7 @@ def conformal_predict_1x2(
     """Compute causal 1X2 conformal set (LAC), Mondrian draw alert, ACI alpha_t, and Venn-Abers intervals.
 
     Args:
-        probs: 3-element [p_home, p_draw, p_away] probabilities.
+        probs: 3-element [p_home, p_draw, p_away] probabilities (list or {"H","D","A"}/{"home","draw","away"} dict).
         cutoff_time: ISO-8601 causal cutoff timestamp.
         cutoff_sales_date: YYYY-MM-DD fallback cutoff.
         alpha: Target miscoverage rate (default 0.20).
@@ -122,7 +123,7 @@ def conformal_record_outcomes(
     """Idempotently append settled pre-match 1X2 outcomes to conformal_calibration.jsonl.
 
     Args:
-        records: List of settled match dicts (match_id, sales_date, kickoff_at, cutoff_time, league, probs, outcome, source_card, known_answer_replay).
+        records: List of settled match dicts (match_id, sales_date, kickoff_at, cutoff_time, league, probs as [p_home, p_draw, p_away] list or {"H","D","A"}/{"home","draw","away"} dict, outcome, source_card, known_answer_replay).
         ledger_path: Absolute path to data/conformal_calibration.jsonl.
         alpha_target: Target miscoverage rate (default 0.20).
         gamma: ACI step size (default 0.05).
@@ -237,6 +238,29 @@ def bayesian_select_playbooks(
     )
 
 
+@mcp.tool()
+def sync_day_ledgers(
+    sales_date: str,
+    repo_root: str,
+    as_of: Optional[str] = None,
+    entity_metadata: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> dict:
+    """Flat 1-call day sync: idempotently record settled prematch cards into Conformal + Bayesian ledgers and return compact health report.
+
+    Args:
+        sales_date: Sales date YYYY-MM-DD (e.g. '2026-11-26').
+        repo_root: Absolute path to project repository root containing data/ and skills/.
+        as_of: Optional ISO-8601 UTC timestamp for evaluating H1-Hn stale_after deadlines (defaults to current UTC time).
+        entity_metadata: Optional override map {entity_id: {entity_type, stale_after}} (auto-loaded from wiki/index.md when omitted).
+    """
+    return _sync_day_ledgers_engine(
+        sales_date=sales_date,
+        repo_root=repo_root,
+        as_of=as_of,
+        entity_metadata=entity_metadata,
+    )
+
+
 def _cli_main() -> int:
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--bootstrap-ledger", action="store_true")
@@ -277,6 +301,7 @@ __all__ = [
     "devig_oo_epc", "devig_oo_epc_batch", "evaluate_context", "mcp",
     "normalize_ah_tier", "normalize_context_bucket", "normalize_league_tier",
     "os", "poisson_dixon_coles", "regularized_incomplete_beta", "select_playbooks",
+    "sync_day_ledgers",
 ]
 
 if __name__ == "__main__":

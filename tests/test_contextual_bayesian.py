@@ -78,7 +78,7 @@ class TestContextualBayesianExploration(unittest.TestCase):
         self.assertIs(_MOD.select_playbooks, select_playbooks)
         for sym in ("_is_truthy_flag", "_is_strict_finite_number", "_betacf", "regularized_incomplete_beta", "beta_ppf"):
             self.assertTrue(hasattr(_MOD, sym), f"Missing re-export {sym}")
-        self.assertIn('version="1.4.0"', _SERVER_PATH.read_text(encoding="utf-8"))
+        self.assertIn('version="1.5.0"', _SERVER_PATH.read_text(encoding="utf-8"))
 
     def test_normalize_context_bucket_multi_clause_and_adversarial_formats(self) -> None:
         norm = _MOD.normalize_context_bucket

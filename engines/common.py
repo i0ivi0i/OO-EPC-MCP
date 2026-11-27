@@ -167,16 +167,30 @@ def parse_timestamp(value: Any) -> Optional[datetime]:
 
 
 def normalize_probs(probs: Any, context: str = "probs") -> Tuple[Optional[List[float]], Optional[dict]]:
-    """Validate 3-class probabilities (0..1 or 0..100 percentages) and normalize to sum 1.0."""
-    if not isinstance(probs, (list, tuple)) or len(probs) != 3:
+    """Validate 3-class probabilities (list/tuple or H/D/A or home/draw/away dict; 0..1 or 0..100%) and normalize to sum 1.0."""
+    seq: Any = probs
+    if isinstance(probs, dict):
+        lowered = {str(k).strip().lower(): v for k, v in probs.items()}
+        if len(lowered) == len(probs) and set(lowered.keys()) == {"h", "d", "a"}:
+            seq = [lowered["h"], lowered["d"], lowered["a"]]
+        elif len(lowered) == len(probs) and set(lowered.keys()) == {"home", "draw", "away"}:
+            seq = [lowered["home"], lowered["draw"], lowered["away"]]
+        else:
+            return None, {
+                "error_code": "INVALID_PROBS_DICT",
+                "field": context,
+                "received": probs,
+                "message": f"{context} dict must have exact keys {{'H','D','A'}} or {{'home','draw','away'}}, got {sorted(str(k) for k in probs.keys())!r}.",
+            }
+    elif not isinstance(probs, (list, tuple)) or len(probs) != 3:
         return None, {
             "error_code": "INVALID_PROBS_LENGTH",
             "field": context,
             "received": probs,
-            "message": f"{context} must be a 3-element list [p_home, p_draw, p_away], got {probs!r}.",
+            "message": f"{context} must be a 3-element list [p_home, p_draw, p_away] (or {{'H','D','A'}}/{{'home','draw','away'}} dict), got {probs!r}.",
         }
     vals: List[float] = []
-    for idx, raw in enumerate(probs):
+    for idx, raw in enumerate(seq):
         try:
             fval = float(raw)
         except (TypeError, ValueError):
@@ -284,20 +298,26 @@ def atomic_write_ledger(path: pathlib.Path, rows: List[Dict[str, Any]], prefix: 
         raise
 
 
-def iter_settled_prematch_cards(repo_root: str):
-    """Yield validated settled prematch card tuples shared by ConformalEngine and BayesianTrackerEngine."""
+def iter_settled_prematch_cards(repo_root: str, sales_date: Optional[str] = None):
+    """Yield validated settled prematch card tuples shared by ConformalEngine, BayesianTrackerEngine, and sync_day_ledgers."""
     try:
         import yaml  # Lazy import so online MCP stays 100% stdlib
     except ImportError as exc:
         raise RuntimeError(
-            "PyYAML is required only for --bootstrap-* (install with `pip install 'oo-epc-mcp[bootstrap]'`)."
+            "PyYAML is required for card-based ledger sync/bootstrap (install with `pip install 'oo-epc-mcp[bootstrap]'`)."
         ) from exc
 
     root = pathlib.Path(repo_root)
     data_dir = root / "data"
     seen_ids = set()
 
-    for day_dir in sorted(p for p in data_dir.iterdir() if p.is_dir() and _DATE_RE.match(p.name)):
+    if sales_date is not None:
+        target_dir = data_dir / sales_date
+        day_dirs = [target_dir] if target_dir.is_dir() and _DATE_RE.match(sales_date) else []
+    else:
+        day_dirs = sorted(p for p in data_dir.iterdir() if p.is_dir() and _DATE_RE.match(p.name)) if data_dir.is_dir() else []
+
+    for day_dir in day_dirs:
         cards_dir = day_dir / "cards"
         if not cards_dir.is_dir():
             continue
