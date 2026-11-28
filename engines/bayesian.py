@@ -659,6 +659,7 @@ class BayesianTrackerEngine:
         prior_strength: float = DEFAULT_PRIOR_STRENGTH,
         ctx_strength: float = DEFAULT_CTX_STRENGTH,
         decay_gamma: float = DEFAULT_DECAY_GAMMA,
+        min_ctx_exploit: int = 3,
     ) -> dict:
         if not isinstance(candidate_ids, (list, tuple)):
             return {
@@ -667,6 +668,15 @@ class BayesianTrackerEngine:
                     "error_code": "INVALID_CANDIDATE_IDS",
                     "received": candidate_ids,
                     "message": "candidate_ids must be a list of playbook/feature/draft IDs.",
+                },
+            }
+        if isinstance(min_ctx_exploit, bool) or not isinstance(min_ctx_exploit, int) or min_ctx_exploit < 1:
+            return {
+                "status": "error",
+                "error": {
+                    "error_code": "INVALID_MIN_CTX_EXPLOIT",
+                    "received": min_ctx_exploit,
+                    "message": f"min_ctx_exploit must be an integer >= 1, got {min_ctx_exploit!r}.",
                 },
             }
         hp_err = cls._validate_positive_hyperparams(
@@ -783,6 +793,7 @@ class BayesianTrackerEngine:
         shadow_candidates: List[str] = []
         tie_break_primary = False
         tie_break_residual = False
+        cold_bucket = True
         score_key = "sampled_excess" if sel_mode == "contextual_ts" else "ucb_excess"
         if eval_map:
             ordered_items = [eval_map[eid] for eid in valid_ids]
@@ -809,7 +820,22 @@ class BayesianTrackerEngine:
             def _r_score(x: Dict[str, Any]) -> Tuple[float, float]:
                 return (-round(x[score_key], 9), -round(x["exploit_score"], 9))
 
-            best_primary, tie_break_primary = _select_best_with_tie(primary_pool, _p_score)
+            def _warm_p_score(x: Dict[str, Any]) -> Tuple[float, float]:
+                if x["n_context"] >= min_ctx_exploit:
+                    return (-round(x["exploit_score"], 9), -round(x["_tie_p_beat"], 9))
+                return (0.0, 0.0)
+
+            non_alert_primary = [x for x in primary_pool if x["advisory_status_global"] != "DRIFT_ALERT"]
+            primary_candidates = non_alert_primary or primary_pool
+            max_ctx_obs = max((x["n_context"] for x in primary_candidates), default=0)
+            cold_bucket = bool(max_ctx_obs < min_ctx_exploit)
+            if cold_bucket and non_alert_primary:
+                best_primary = min(non_alert_primary, key=lambda x: caller_rank[x["entity_id"]])
+                tie_break_primary = sum(1 for x in non_alert_primary if _p_score(x) == _p_score(best_primary)) > 1
+            elif not cold_bucket:
+                best_primary, tie_break_primary = _select_best_with_tie(primary_candidates, _warm_p_score)
+            else:
+                best_primary, tie_break_primary = _select_best_with_tie(primary_pool, _p_score)
             primary_seat = best_primary["entity_id"]
 
             rem = [x for x in ordered_items if x["entity_id"] != primary_seat]
@@ -828,6 +854,7 @@ class BayesianTrackerEngine:
             "algorithm": "HierarchicalContextualBandit",
             "mode": sel_mode,
             "context_bucket": norm_bucket,
+            "cold_bucket": cold_bucket,
             "causal_rows": len(causal_rows),
             "exploration_triggered": len(valid_ids) >= 3,
             "primary_seat": primary_seat,

@@ -41,7 +41,7 @@ except ImportError:
 mcp = FastMCP(
     name="sports-math",
     description="Mathematical computation engine for sports betting odds devigging, score probability modeling, conformal calibration, and contextual Bayesian/e-process playbook selection.",
-    version="1.5.0",
+    version="1.5.1",
 )
 
 

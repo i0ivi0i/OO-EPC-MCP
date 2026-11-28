@@ -78,7 +78,7 @@ class TestContextualBayesianExploration(unittest.TestCase):
         self.assertIs(_MOD.select_playbooks, select_playbooks)
         for sym in ("_is_truthy_flag", "_is_strict_finite_number", "_betacf", "regularized_incomplete_beta", "beta_ppf"):
             self.assertTrue(hasattr(_MOD, sym), f"Missing re-export {sym}")
-        self.assertIn('version="1.5.0"', _SERVER_PATH.read_text(encoding="utf-8"))
+        self.assertIn('version="1.5.1"', _SERVER_PATH.read_text(encoding="utf-8"))
 
     def test_normalize_context_bucket_multi_clause_and_adversarial_formats(self) -> None:
         norm = _MOD.normalize_context_bucket
@@ -873,6 +873,268 @@ class TestContextualBayesianExploration(unittest.TestCase):
             self.assertEqual(b_1469[0]["context_bucket"], "national_team:even_shallow")
             b_1470 = [r for r in boot_rows if r["match_id"] == "2981470"]
             self.assertEqual(b_1470[0]["context_bucket"], "national_team:even_shallow")
+
+    def test_cold_bucket_preserves_caller_rank_until_warm_takeover(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ledger = pathlib.Path(td) / "cold_vs_warm.jsonl"
+            # Populate 10 global wins for multi-book in OTHER buckets so n_global=10 but top5:mid n_context=0
+            _MOD.bayesian_record_outcomes(
+                self._make_ctx_obs(
+                    "playbooks/multi-book-consensus-collapse.md",
+                    [1] * 10,
+                    p_baseline=0.50,
+                    start_id=3980000,
+                    context_bucket="continental_cup:even_shallow",
+                ),
+                ledger_path=str(ledger),
+            )
+            candidates_005 = [
+                "playbooks/deep-water-resistance.md",
+                "playbooks/false-favorite-trap.md",
+                "playbooks/head-fake.md",
+                "playbooks/tiered-defense-mismatch.md",
+                "playbooks/multi-book-consensus-collapse.md",
+            ]
+            # 1. AE1: Cold bucket (max_ctx_obs == 0 < 3) preserves caller_rank[0] on primary_seat
+            res_cold = _MOD.bayesian_select_playbooks(
+                candidate_ids=candidates_005,
+                context_bucket="top5:mid",
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger),
+                mode="contextual_ts",
+                seed_key="3018884",
+            )
+            self.assertEqual(res_cold["status"], "ok")
+            self.assertTrue(res_cold["cold_bucket"])
+            self.assertEqual(res_cold["primary_seat"], "playbooks/deep-water-resistance.md")
+            self.assertTrue(res_cold["tie_break_applied"]["primary"])
+            self.assertNotEqual(res_cold["residual_seat"], "playbooks/deep-water-resistance.md")
+
+            # Unequal global scores in cold bucket: 1 global win vs 10 global wins still preserves caller_rank[0] with tie_break_primary == False
+            _MOD.bayesian_record_outcomes(
+                self._make_ctx_obs(
+                    "playbooks/deep-water-resistance.md",
+                    [1],
+                    p_baseline=0.60,
+                    start_id=3980050,
+                    context_bucket="continental_cup:deep",
+                ),
+                ledger_path=str(ledger),
+            )
+            res_cold_unequal = _MOD.bayesian_select_playbooks(
+                candidate_ids=candidates_005,
+                context_bucket="top5:mid",
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger),
+                mode="contextual_ts",
+                seed_key="3018884",
+            )
+            self.assertTrue(res_cold_unequal["cold_bucket"])
+            self.assertEqual(res_cold_unequal["primary_seat"], "playbooks/deep-water-resistance.md")
+            self.assertFalse(res_cold_unequal["tie_break_applied"]["primary"])
+
+            # Determinism under identical seed_key="3013777"
+            det1 = _MOD.bayesian_select_playbooks(
+                candidate_ids=candidates_005,
+                context_bucket="top5:even_shallow",
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger),
+                mode="contextual_ts",
+                seed_key="3013777",
+            )
+            det2 = _MOD.bayesian_select_playbooks(
+                candidate_ids=candidates_005,
+                context_bucket="top5:even_shallow",
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger),
+                mode="contextual_ts",
+                seed_key="3013777",
+            )
+            self.assertEqual(det1["primary_seat"], det2["primary_seat"])
+            self.assertEqual(det1["residual_seat"], det2["residual_seat"])
+            self.assertEqual(det1["shadow_candidates"], det2["shadow_candidates"])
+            self.assertEqual(det1["sampled_scores"], det2["sampled_scores"])
+
+            # 2. DRIFT_ALERT first candidate (even with >=3 in-bucket misses) does NOT flip cold_bucket False and is skipped
+            alert_rows = [
+                {
+                    "match_id": f"39801{i:02d}",
+                    "sales_date": f"2026-11-{10 + i:02d}",
+                    "kickoff_at": f"2026-11-{10 + i:02d}T20:00:00+08:00",
+                    "cutoff_time": f"2026-11-{10 + i:02d}T16:00:00+08:00",
+                    "entity_id": "playbooks/head-fake.md",
+                    "direction": "主胜",
+                    "p_baseline": 0.70,
+                    "hit": 0,
+                    "context_bucket": "top5:mid",
+                }
+                for i in range(10)
+            ]
+            _MOD.bayesian_record_outcomes(alert_rows, ledger_path=str(ledger))
+            res_skip_alert = _MOD.bayesian_select_playbooks(
+                candidate_ids=[
+                    "playbooks/head-fake.md",
+                    "playbooks/deep-water-resistance.md",
+                    "playbooks/multi-book-consensus-collapse.md",
+                ],
+                context_bucket="top5:mid",
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger),
+                mode="contextual_ts",
+                seed_key="3018884",
+            )
+            self.assertTrue(res_skip_alert["cold_bucket"])
+            self.assertEqual(res_skip_alert["primary_seat"], "playbooks/deep-water-resistance.md")
+
+            # All-DRIFT_ALERT fallback uses _select_best_with_tie(primary_pool, _p_score)
+            alert_b_rows = [
+                {
+                    "match_id": f"39802{i:02d}",
+                    "sales_date": f"2026-11-{10 + i:02d}",
+                    "kickoff_at": f"2026-11-{10 + i:02d}T20:00:00+08:00",
+                    "cutoff_time": f"2026-11-{10 + i:02d}T16:00:00+08:00",
+                    "entity_id": "playbooks/false-favorite-trap.md",
+                    "direction": "主胜",
+                    "p_baseline": 0.75,
+                    "hit": 0,
+                    "context_bucket": "other_domestic:deep",
+                }
+                for i in range(10)
+            ]
+            _MOD.bayesian_record_outcomes(alert_b_rows, ledger_path=str(ledger))
+            res_all_alert = _MOD.bayesian_select_playbooks(
+                candidate_ids=["playbooks/false-favorite-trap.md", "playbooks/head-fake.md"],
+                context_bucket="top5:even_shallow",
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger),
+                mode="bayes_ucb",
+            )
+            self.assertEqual(res_all_alert["status"], "ok")
+            self.assertEqual(res_all_alert["primary_seat"], "playbooks/head-fake.md")
+
+            # 3. Warm bucket takeover once healthy candidate reaches n_context >= 3
+            _MOD.bayesian_record_outcomes(
+                self._make_ctx_obs(
+                    "playbooks/multi-book-consensus-collapse.md",
+                    [1, 1, 1],
+                    p_baseline=0.45,
+                    start_id=3980300,
+                    context_bucket="top5:even_shallow",
+                )
+                + self._make_ctx_obs(
+                    "playbooks/deep-water-resistance.md",
+                    [0],
+                    p_baseline=0.45,
+                    start_id=3980400,
+                    context_bucket="top5:even_shallow",
+                ),
+                ledger_path=str(ledger),
+            )
+            res_warm = _MOD.bayesian_select_playbooks(
+                candidate_ids=[
+                    "playbooks/deep-water-resistance.md",
+                    "playbooks/multi-book-consensus-collapse.md",
+                    "playbooks/price-over-handicap.md",
+                ],
+                context_bucket="top5:even_shallow",
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger),
+                mode="contextual_ts",
+                seed_key="3013777",
+            )
+            self.assertFalse(res_warm["cold_bucket"])
+            self.assertEqual(res_warm["primary_seat"], "playbooks/multi-book-consensus-collapse.md")
+
+            # 3b. Warm-bucket guards: (i) 0/3 in-bucket loser does NOT let 0-ctx global-rich bystander hijack caller_rank[0];
+            # (ii) DRIFT_ALERT candidate in warm bucket cannot hijack primary_seat over healthy candidate
+            ledger_warm_guard = pathlib.Path(td) / "warm_guard.jsonl"
+            _MOD.bayesian_record_outcomes(
+                self._make_ctx_obs(
+                    "playbooks/bystander-loser.md",
+                    [0, 0, 0],
+                    p_baseline=0.50,
+                    start_id=3980500,
+                    context_bucket="top5:mid",
+                )
+                + self._make_ctx_obs(
+                    "playbooks/out-of-bucket-giant.md",
+                    [1] * 10,
+                    p_baseline=0.45,
+                    start_id=3980600,
+                    context_bucket="other_domestic:even_shallow",
+                ),
+                ledger_path=str(ledger_warm_guard),
+            )
+            res_no_hijack = _MOD.bayesian_select_playbooks(
+                candidate_ids=[
+                    "playbooks/caller-top.md",
+                    "playbooks/out-of-bucket-giant.md",
+                    "playbooks/bystander-loser.md",
+                ],
+                context_bucket="top5:mid",
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger_warm_guard),
+                mode="contextual_ts",
+                seed_key="3018884",
+            )
+            self.assertFalse(res_no_hijack["cold_bucket"])
+            self.assertEqual(res_no_hijack["primary_seat"], "playbooks/caller-top.md")
+
+            # Add global drift misses on out-of-bucket-giant while giving it 3 in-bucket wins -> DRIFT_ALERT skipped in warm bucket
+            _MOD.bayesian_record_outcomes(
+                self._make_ctx_obs(
+                    "playbooks/out-of-bucket-giant.md",
+                    [1, 1, 1],
+                    p_baseline=0.40,
+                    start_id=3980650,
+                    context_bucket="top5:mid",
+                )
+                + [
+                    {
+                        "match_id": f"39807{i:02d}",
+                        "sales_date": f"2026-11-{15 + (i % 10):02d}",
+                        "kickoff_at": f"2026-11-{15 + (i % 10):02d}T20:00:00+08:00",
+                        "cutoff_time": f"2026-11-{15 + (i % 10):02d}T16:00:00+08:00",
+                        "entity_id": "playbooks/out-of-bucket-giant.md",
+                        "direction": "主胜",
+                        "p_baseline": 0.80,
+                        "hit": 0,
+                        "context_bucket": "other_domestic:deep",
+                    }
+                    for i in range(15)
+                ],
+                ledger_path=str(ledger_warm_guard),
+            )
+            res_warm_alert = _MOD.bayesian_select_playbooks(
+                candidate_ids=[
+                    "playbooks/out-of-bucket-giant.md",
+                    "playbooks/caller-top.md",
+                ],
+                context_bucket="top5:mid",
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger_warm_guard),
+                mode="contextual_ts",
+                seed_key="3018884",
+            )
+            self.assertEqual(res_warm_alert["primary_seat"], "playbooks/caller-top.md")
+
+            # 4. Engine-level min_ctx_exploit validation
+            bad_min = _MOD.BayesianTrackerEngine.select_playbooks(
+                candidate_ids=["playbooks/price-over-handicap.md"],
+                context_bucket="top5:even_shallow",
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger),
+                min_ctx_exploit=0,
+            )
+            self.assertEqual(bad_min["status"], "error")
+            bad_bool = _MOD.BayesianTrackerEngine.select_playbooks(
+                candidate_ids=["playbooks/price-over-handicap.md"],
+                context_bucket="top5:even_shallow",
+                cutoff_time="2026-12-01T12:00:00+08:00",
+                ledger_path=str(ledger),
+                min_ctx_exploit=True,
+            )
+            self.assertEqual(bad_bool["status"], "error")
 
 
 if __name__ == "__main__":
